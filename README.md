@@ -1,187 +1,178 @@
-# DevLab_BMI323
+# DevLab_Interface
 
-Arduino library for the Bosch BMI323 6-axis IMU using direct I2C register communication.
+Generic, zero-overhead bus contract for the DevLab ecosystem. It defines
+one register-access API (`readRegister8/16/32`, `writeRegister8/16/32`,
+`readBits...`) resolved once via CRTP, and lets any concrete transport
+(I2C, SPI, ...) plug into it by implementing just two raw primitives:
+`writeBytes()` and `readBytes()`.
 
-This library provides a lightweight and reliable object-oriented interface for:
-
-- Accelerometer acquisition
-- Gyroscope acquisition
-- Temperature reading
-
-Compatible with ESP32, RP2040, and Arduino-compatible platforms.
-
+Sensor drivers are written once against `DevLab_BusIO`, and work
+unchanged on every bus that implements the contract.
 
 ---
 
-# Features
+## Features
 
-- Direct 16-bit register communication
-- Object-oriented API
-- Lightweight implementation
-- High-speed I2C communication
-- Supports custom I2C pins
-- Handles BMI323 dummy I2C bytes internally
-- Compatible with Bosch BMI323 devices
-- Optimized for embedded systems and rapid prototyping
+- Generic bus contract (`DevLab_BusIO<Derived>`) resolved at compile time via CRTP — no vtable, no runtime dispatch cost
+- Fixed-width register helpers (8/16/32-bit read/write) implemented once, shared by every bus
+- Bit-field helpers (`readBits`, `readBits16`, `readBits32`)
+- Concrete I2C transport (`DevLab_I2C_Interface`) built on `Wire`
+- Per-device leading dummy-byte handling (e.g. Bosch BMI323) declared once at construction, discarded automatically by every helper
+- Explicit SDA/SCL pin support on ESP32 and RP2040 (arduino-pico)
+- Concrete bus classes are plain, non-template `.h`/`.cpp` pairs — only the contract itself is header-only
 
 ---
 
-# Supported Interfaces
+## Supported Interfaces
 
-| Interface | Support Status |
+| Interface | Status |
 |---|---|
-| I2C | Supported |
-| SPI | Supported |
+| I2C | Implemented (`DevLab_I2C_Interface`) |
+| SPI | Planned |
 
 ---
 
-# Installation
+## Installation
 
-## Manual Installation
+### Manual Installation
 
-
-1. Open Arduino IDE
-2. Go to:
-
-```text
-Sketch -> Library Manager -> Search DevLab_BMI323...
-```
-
-3. Click on Install
-
-4. Compile and upload the examples for the sensor
+1. Download or clone this repository
+2. Copy the folder into your Arduino `libraries/` directory
+3. Restart the Arduino IDE
+4. Open `File -> Examples -> DevLab_Interface` to try the examples
 
 ---
 
-# Quick Start Example
+## Quick Start Example
 
 ```cpp
-#include <DevLab_BMI323.h>
+#include <DevLab_I2C_Interface.h>
 
-#define SDA_PIN 1
-#define SCL_PIN 6
+#define SDA_PIN 24
+#define SCL_PIN 25
 
-DevLab_BMI323 imu(Wire, 0x69);
-BMI323_SensorData data;
+#define REG_WHO_AM_I 0x00
+
+// Wire, I2C address, clock (Hz), leading dummy bytes on read (device-specific)
+DevLab_I2C_Interface bus(Wire, 0x69, 400000, 0);
 
 void setup() {
-
   Serial.begin(115200);
 
-  if (!imu.begin(SDA_PIN, SCL_PIN, 400000)) {
+  bus.begin(SDA_PIN, SCL_PIN);
 
-    Serial.println("BMI323 initialization failed.");
-
-    while (1);
+  uint8_t whoAmI;
+  if (bus.getWhoAmI(REG_WHO_AM_I, whoAmI)) {
+    Serial.print("WHO_AM_I: 0x");
+    Serial.println(whoAmI, HEX);
+  } else {
+    Serial.println("No ACK from device.");
   }
 }
 
-void loop() {
-
-  if (imu.readData(data)) {
-
-    Serial.print("ACC X: ");
-    Serial.print(data.accX);
-
-    Serial.print(" Y: ");
-    Serial.print(data.accY);
-
-    Serial.print(" Z: ");
-    Serial.println(data.accZ);
-
-    Serial.print("GYR X: ");
-    Serial.print(data.gyrX);
-
-    Serial.print(" Y: ");
-    Serial.print(data.gyrY);
-
-    Serial.print(" Z: ");
-    Serial.println(data.gyrZ);
-
-    Serial.print("Temperature: ");
-    Serial.print(data.temperatureC);
-    Serial.println(" °C");
-  }
-
-  delay(200);
-}
+void loop() {}
 ```
 
 ---
 
-# Wiring Example
+## Building a Sensor Driver on Top
 
-| BMI323 | MCU |
+A sensor driver only needs the contract, not the transport it ends up
+running on:
+
+```cpp
+class MySensor {
+public:
+    template <typename Bus>
+    bool begin(Bus &bus) {
+        uint8_t chipId;
+        return bus.readRegister8(REG_CHIP_ID, chipId) && chipId == EXPECTED_CHIP_ID;
+    }
+};
+```
+
+Any bus deriving from `DevLab_BusIO` — I2C today, SPI once implemented —
+works with the same driver code unchanged.
+
+---
+
+## Examples
+
+| Example | Description |
+|---|---|
+| `I2C/BusIO_WhoAmI` | Validates `getWhoAmI()` against a plain I2C device (MPU6050 by default) |
+| `I2C/BusIO_Basic` | Exercises `DevLab_BusIO` + `DevLab_I2C_Interface` end to end (read/write/readback) against a Bosch BMI323, including its 2 leading dummy read bytes |
+| `SPI/BMI323_SPI_BasicRead` | Reference integration: a sensor driver (`DevLab_BMI323`) built on the DevLab bus contract, read over SPI |
+| `SPI/spi_interruptbmi323` | Reference integration: same driver, using its physical interrupt pins |
+
+The SPI examples depend on the external `DevLab_BMI323` driver library
+and demonstrate how a real sensor driver consumes this contract; the
+SPI concrete bus class itself (`DevLab_SPI_Interface`) is not yet part
+of this repository.
+
+---
+
+## Wiring Example (I2C)
+
+| Device | MCU |
 |---|---|
 | SDA | SDA |
 | SCL | SCL |
 | VDD | 3.3V |
-| VDDIO | 3.3V |
 | GND | GND |
-| CSB | 3.3V |
-| SDO | 3.3V (0x69) or GND (0x68) |
 
 ---
 
-# Compatibility
+## Compatibility
 
 | MCU Platform | Status |
 |---|---|
 | ESP32 | Tested |
-| ESP32-C6 | Tested |
-| ESP32-C5 | Tested |
-| ESP32-H2 | Tested |
+| ESP32-C6 / C5 / H2 | Tested |
+| RP2040 (arduino-pico) | Tested |
 | Arduino-compatible boards | Compatible |
 
 ---
 
-# Notes
-
-BMI323 I2C burst reads include 2 dummy bytes at the beginning of the transfer.
-
-The DevLab_BMI323 library automatically handles those internally.
-
-Current library version supports only I2C communication.
-
-SPI support may be added in future releases.
-
----
-
-# Folder Structure
+## Folder Structure
 
 ```text
-DevLab_BMI323/
+unit_devlab_interface_library/
 ├── examples/
-│   └── BasicRead/
+│   ├── I2C/
+│   │   ├── BusIO_Basic/
+│   │   └── BusIO_WhoAmI/
+│   └── SPI/
+│       ├── BMI323_SPI_BasicRead/
+│       └── spi_interruptbmi323/
 ├── src/
-│   ├── DevLab_BMI323.h
-│   └── DevLab_BMI323.cpp
+│   ├── DevLab_BusIO.h
+│   ├── DevLab_I2C_Interface.h
+│   └── DevLab_I2C_Interface.cpp
 ├── library.properties
 ├── README.md
-└── LICENSE
+└── license.txt
 ```
 
 ---
 
-# Version
+## Version
 
 | Parameter | Value |
 |---|---|
-| Library Name | DevLab_BMI323 |
+| Library Name | DevLab_Interface |
 | Version | 1.0.0 |
-| Communication | I2C/SPI|
+| Communication | I2C (SPI planned) |
 | Architecture | Cross-platform |
 
 ---
 
-# Author
-
-Adrián Rabadán Ortiz | Jonathan Mejorado Lopez 
+## Author
 
 UNIT Electronics - DevLab Ecosystem
 
 ---
 
-# License
+## License
 
 MIT License
